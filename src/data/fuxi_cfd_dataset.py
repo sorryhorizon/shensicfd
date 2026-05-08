@@ -510,28 +510,28 @@ def create_dataloaders(
         num_workers=num_workers,
         pin_memory=pin_memory,
         drop_last=True,
-        prefetch_factor=2,
-        persistent_workers=True if num_workers > 0 else False,
+        prefetch_factor=2 if num_workers > 0 else None,
+        persistent_workers=False,
     )
-    
+
     val_loader = DataLoader(
         val_dataset,
         batch_size=batch_size,
         shuffle=False,
         num_workers=num_workers,
         pin_memory=pin_memory,
-        prefetch_factor=2,
-        persistent_workers=True if num_workers > 0 else False,
+        prefetch_factor=2 if num_workers > 0 else None,
+        persistent_workers=False,
     )
-    
+
     test_loader = DataLoader(
         test_dataset,
         batch_size=batch_size,
         shuffle=False,
         num_workers=num_workers,
         pin_memory=pin_memory,
-        prefetch_factor=2,
-        persistent_workers=True if num_workers > 0 else False,
+        prefetch_factor=2 if num_workers > 0 else None,
+        persistent_workers=False,
     )
     
     return train_loader, val_loader, test_loader
