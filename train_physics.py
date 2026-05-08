@@ -121,6 +121,18 @@ def train_v3():
     print(f'   Loss: EnhancedPhysicsLoss + ProgressiveLossScheduler')
     print('='*70 + '\n')
 
+    # === 数据 ===
+    print('\nLoading datasets...')
+    data_dir = '/mnt/sdata/jz/fuxi_cfd/dataset'
+
+    train_loader, val_loader, _ = create_dataloaders(
+        data_dir=data_dir,
+        batch_size=batch_size,
+        num_workers=4,
+        prefetch_to_memory=False,
+        pin_memory=True,
+    )
+
     # === 模型 ===
     print('Creating model...')
 
@@ -151,18 +163,6 @@ def train_v3():
     raw_model = model.module if isinstance(model, nn.DataParallel) else model
     params = raw_model.get_num_params()
     print(f'   Parameters: {params["total"]:,} ({params["total_mb"]:.1f} MB)')
-
-    # === 数据 ===
-    print('\nLoading datasets...')
-    data_dir = '/mnt/sdata/jz/fuxi_cfd/dataset'
-
-    train_loader, val_loader, _ = create_dataloaders(
-        data_dir=data_dir,
-        batch_size=batch_size,
-        num_workers=4,
-        prefetch_to_memory=False,  # Set True for faster epoch after first cache build
-        pin_memory=True,
-    )
 
     # === 损失函数 ===
     # Warmup phase: use robust SmoothL1Loss to avoid NaN from untrained model
