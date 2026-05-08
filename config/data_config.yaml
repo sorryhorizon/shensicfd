@@ -1,0 +1,39 @@
+data:
+  data_root: /mnt/sdata/jz/fuxi_cfd/dataset
+  input_keys: ["u_100m", "v_100m", "dem", "roughness"]
+  output_keys: ["u", "v", "w", "k"]
+  input_shape: [4, 300, 300]
+  output_shape: [27, 4, 300, 300]
+
+normalization:
+  use_fuxi_scaler: true
+  scaler_path: /mnt/sdata/jz/fuxi_cfd/inference_example/normalization
+
+vertical_levels:
+  - 5
+  - 10
+  - 15
+  - 20
+  - 25
+  - 30
+  - 35
+  - 40
+  - 45
+  - 50
+  - 55
+  - 60
+  - 65
+  - 70
+  - 75
+  - 80
+  - 85
+  - 90
+  - 95
+  - 100
+  - 106.5
+  - 114.95
+  - 125.94
+  - 140.22
+  - 158.78
+  - 182.91
+  - 214.29

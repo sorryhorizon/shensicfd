@@ -1,0 +1,41 @@
+model:
+  type: hybrid
+  in_channels: 4
+  out_channels: 4
+  n_vertical_levels: 27
+  base_channels: 64
+  hidden_dim: 256
+  num_heads: 8
+  encoder_type: afno
+  decoder_type: parallel
+  dropout: 0.1
+  use_physics_constraint: true
+
+training:
+  max_epochs: 100
+  batch_size: 1
+  accum_grad_batches: 4
+  learning_rate: 0.00005
+  weight_decay: 0.01
+  scheduler: cosine
+  precision: 32
+  train_ratio: 0.8
+  val_ratio: 0.1
+  test_ratio: 0.1
+  early_stopping:
+    patience: 15
+    monitor: val_loss
+    mode: min
+
+data:
+  input_resolution: [300, 300]
+  low_res_input: [9, 9]
+  output_levels: 27
+  normalize: true
+  data_augmentation: true
+
+paths:
+  fuxi_data_dir: /mnt/sdata/jz/fuxi_cfd/dataset
+  output_dir: ./experiments
+  checkpoint_dir: ./experiments/checkpoints
+  log_dir: ./experiments/logs

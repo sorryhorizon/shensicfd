@@ -1,0 +1,42 @@
+# Checkpoints and logs
+checkpoints/
+logs/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Data cache
+.data_cache/
+
+# Model weights
+*.pt
+*.pth
+*.ckpt
+
+# Environment
+.env
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Claude / Trae metadata
+.claude/
+.trae/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Training artifacts
+training_logs/
+*.log
+*.png
