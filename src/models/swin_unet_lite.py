@@ -12,38 +12,39 @@ from .swin_transformer import (
 
 class LightweightMultiModalEncoder(nn.Module):
     """
-    轻量级多模态输入编码器
+    轻量级多模态输入编码器（3路独立编码，无显式坡度输入）
 
-    优化版本：
-    - 更小的通道数
-    - 更少的卷积层
-    - 高效的特征提取
-    - 支持6通道输入 (u_100m, v_100m, dem, roughness, dem_dx, dem_dy)
+    改进：
+    - wind: 先在原始9x9分辨率编码，再上采样（避免插值噪声）
+    - dem: 单独编码，让模型自己从DEM中学坡度
+    - roughness: 单独编码
     """
-    def __init__(self, in_channels: int = 6, base_dim: int = 32, target_size: Tuple[int, int] = (300, 300)):
+    def __init__(self, in_channels: int = 4, base_dim: int = 32, target_size: Tuple[int, int] = (300, 300)):
         super().__init__()
-
         self.target_size = target_size
 
+        # 风场编码器: 2ch -> base_dim (在9x9分辨率上编码)
         self.wind_encoder = nn.Sequential(
             nn.Conv2d(2, base_dim, kernel_size=3, padding=1, bias=False),
             RMSGroupNorm(base_dim),
             nn.GELU(),
         )
 
-        # Terrain encoder: DEM + gradients (dem_dx, dem_dy)
-        self.terrain_encoder = nn.Sequential(
-            nn.Conv2d(3, base_dim, kernel_size=3, padding=1, bias=False),
+        # DEM编码器: 单独处理海拔标量场（模型自己学坡度）
+        self.dem_encoder = nn.Sequential(
+            nn.Conv2d(1, base_dim, kernel_size=3, padding=1, bias=False),
             RMSGroupNorm(base_dim),
             nn.GELU(),
         )
 
+        # 粗糙度编码器
         self.roughness_encoder = nn.Sequential(
             nn.Conv2d(1, base_dim, kernel_size=3, padding=1, bias=False),
             RMSGroupNorm(base_dim),
             nn.GELU(),
         )
 
+        # 融合: 3路特征 -> base_dim
         self.fusion_conv = nn.Sequential(
             nn.Conv2d(base_dim * 3, base_dim, kernel_size=1, bias=False),
             RMSGroupNorm(base_dim),
@@ -51,24 +52,18 @@ class LightweightMultiModalEncoder(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        B = x.shape[0]
-
         wind = x[:, :2]
         dem = x[:, 2:3]
         rough = x[:, 3:4]
-        dem_grad = x[:, 4:7]  # dem_dx, dem_dy (and pad if needed)
-        # Ensure dem_grad has 3 channels by padding with zeros if necessary
-        if dem_grad.shape[1] == 2:
-            pad = torch.zeros(B, 1, dem_grad.shape[2], dem_grad.shape[3], device=dem_grad.device, dtype=dem_grad.dtype)
-            dem_grad = torch.cat([dem_grad, pad], dim=1)
 
-        wind_up = F.interpolate(wind, size=self.target_size, mode='bilinear', align_corners=False)
-        wind_feat = self.wind_encoder(wind_up)
+        # 风场: 先编码，再上采样
+        wind_feat = self.wind_encoder(wind)
+        wind_feat = F.interpolate(wind_feat, size=self.target_size, mode='bilinear', align_corners=False)
 
-        terrain_feat = self.terrain_encoder(dem_grad)
+        dem_feat = self.dem_encoder(dem)
         rough_feat = self.roughness_encoder(rough)
 
-        fused = torch.cat([wind_feat, terrain_feat, rough_feat], dim=1)
+        fused = torch.cat([wind_feat, dem_feat, rough_feat], dim=1)
         output = self.fusion_conv(fused)
 
         return output
@@ -280,27 +275,21 @@ class PhysicsInformedSwinUNetLite(nn.Module):
         
         if self.use_cross_attention:
             dem_input = x_raw[:, 2:3]
-            grad_input = x_raw[:, 4:6] if x_raw.shape[1] >= 6 else torch.zeros_like(dem_input).expand(-1, 2, -1, -1)
-            # Pad grad to 3 channels for terrain_encoder
-            pad = torch.zeros_like(dem_input)
-            terrain_input = torch.cat([dem_input, grad_input, pad], dim=1)  # (B, 4, H, W) -> actually dem=1, grad=2, pad=1 => 4... wait
             rough_input = x_raw[:, 3:4]
 
-            # terrain_encoder expects 3 channels: dem, dz_dx, dz_dy
-            terrain_input_3ch = torch.cat([dem_input, grad_input], dim=1)  # (B, 3, H, W)
-            terrain_feat = self.input_encoder.terrain_encoder(
-                F.interpolate(terrain_input_3ch, size=x.shape[2:], mode='bilinear', align_corners=False)
+            dem_feat = self.input_encoder.dem_encoder(
+                F.interpolate(dem_input, size=x.shape[2:], mode='bilinear', align_corners=False)
             )
             rough_feat = self.input_encoder.roughness_encoder(
                 F.interpolate(rough_input, size=x.shape[2:], mode='bilinear', align_corners=False)
             )
-            
-            terrain_ctx = self.dem_proj(terrain_feat)
+
+            dem_ctx = self.dem_proj(dem_feat)
             rough_ctx = self.rough_proj(rough_feat)
 
-            x_dem = self.wind_dem_attn(x, terrain_ctx)
+            x_dem = self.wind_dem_attn(x, dem_ctx)
             x_rough = self.wind_rough_attn(x, rough_ctx)
-            
+
             x = x + (x_dem + x_rough) * 0.5
         
         x = self.dec4(x, s4)
@@ -442,7 +431,7 @@ def create_lite_model(config: dict = None) -> PhysicsInformedSwinUNetLite:
         config = {}
     
     default_config = {
-        'in_channels': 6,
+        'in_channels': 4,
         'out_channels': 4,
         'n_levels': 27,
         'base_channels': 32,
@@ -474,7 +463,7 @@ if __name__ == "__main__":
     print(f"   内存占用: {params['total_mb']:.1f} MB")
     
     import torch
-    x = torch.randn(1, 6, 300, 300)
+    x = torch.randn(1, 4, 300, 300)
 
     with torch.no_grad():
         y = model(x)
