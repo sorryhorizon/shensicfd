@@ -43,13 +43,16 @@ The project uses the FuXi-CFD dataset:
 ## Training
 
 ```bash
-# Multi-GPU training (default: GPUs 2,3,4,5)
-python train_v3.py
+# Physics-informed training
+python train_physics.py
+
+# Baseline (data-driven only, no physics constraints)
+python train_baseline.py
 ```
 
 ### Training Configuration
 
-Edit `train_v3.py` to adjust:
+Edit `train_physics.py` or `train_baseline.py` to adjust:
 - `gpu_ids`: GPU devices to use
 - `batch_size_per_gpu`: Batch size per GPU
 - `accum_steps`: Gradient accumulation steps
