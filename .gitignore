@@ -40,3 +40,6 @@ Thumbs.db
 training_logs/
 *.log
 *.png
+
+# Docs (local only)
+docs/
