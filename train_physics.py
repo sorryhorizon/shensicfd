@@ -3,7 +3,7 @@
 ShenSi-CFD V3 训练脚本
 
 改进点：
-1. 使用物理约束损失函数 (EnhancedPhysicsLoss + ProgressiveLossScheduler)
+1. 使用物理约束损失函数 (EnhancedPhysicsLoss)
 2. 混合精度训练 (AMP) - 加速1.5-2x
 3. 数据加载优化 (prefetch_to_memory, num_workers=4)
 4. 更大batch_size=16 (A800 80GB)
@@ -28,7 +28,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from src.models.swin_unet_lite import create_lite_model
 from src.data.fuxi_cfd_dataset import FuXiCFDDataset, create_dataloaders
-from src.losses.enhanced_physics_loss import EnhancedPhysicsLoss, ProgressiveLossScheduler
+from src.losses.enhanced_physics_loss import EnhancedPhysicsLoss
 
 
 class EMA:
@@ -118,7 +118,7 @@ def train_v3():
     print(f'   Epochs: {epochs}')
     print(f'   AMP: Enabled')
     print(f'   EMA Decay: {ema_decay}')
-    print(f'   Loss: EnhancedPhysicsLoss + ProgressiveLossScheduler')
+    print(f'   Loss: EnhancedPhysicsLoss')
     print('='*70 + '\n')
 
     # === 数据 ===
@@ -128,7 +128,7 @@ def train_v3():
     train_loader, val_loader, _ = create_dataloaders(
         data_dir=data_dir,
         batch_size=batch_size,
-        num_workers=4,
+        num_workers=0,  # DataParallel deadlock workaround
         prefetch_to_memory=False,
         pin_memory=True,
     )
@@ -155,12 +155,13 @@ def train_v3():
     })
     model = model.to(device)
 
-    # Multi-GPU DataParallel
-    if n_gpus > 1:
-        model = nn.DataParallel(model)
-        print(f'   Using {n_gpus} GPUs: {gpu_ids}')
-
-    raw_model = model.module if isinstance(model, nn.DataParallel) else model
+    # NOTE: DataParallel disabled due to deadlock issues
+    # if n_gpus > 1:
+    #     model = nn.DataParallel(model)
+    #     print(f'   Using {n_gpus} GPUs: {gpu_ids}')
+    #
+    # raw_model = model.module if isinstance(model, nn.DataParallel) else model
+    raw_model = model
     params = raw_model.get_num_params()
     print(f'   Parameters: {params["total"]:,} ({params["total_mb"]:.1f} MB)')
 
@@ -179,12 +180,6 @@ def train_v3():
         use_k_transform=True,
         k_specialized_weight=0.5,
     ).to(device)
-
-    loss_scheduler = ProgressiveLossScheduler(
-        base_loss=physics_loss,
-        n_stages=3,
-        stage_epochs=[30, 40, 30],
-    )
 
     # Switch from warmup loss to physics loss after these epochs
     warmup_loss_epochs = 5
@@ -241,8 +236,6 @@ def train_v3():
     for epoch in range(start_epoch, epochs):
         epoch_start = time.time()
         current_lr = lr_scheduler.step(epoch)
-        current_stage = loss_scheduler.get_current_stage(epoch)
-
         # Reset best_val_loss when switching from warmup to physics loss
         if epoch == warmup_loss_epochs:
             best_val_loss = float('inf')
@@ -275,7 +268,7 @@ def train_v3():
                     loss_dict = {'total': loss, 'mse': loss.detach()}
                 else:
                     dem = inputs[:, 2:3]
-                    loss_dict = loss_scheduler(outputs, targets, epoch=epoch, dem=dem, return_dict=True)
+                    loss_dict = physics_loss(outputs, targets, dem=dem, return_dict=True)
                     loss = loss_dict['total']
 
             # Skip NaN losses
@@ -298,8 +291,6 @@ def train_v3():
 
             # Track individual losses
             for k, v in loss_dict.items():
-                if k == 'current_stage':
-                    continue
                 try:
                     v_val = v.item() if isinstance(v, torch.Tensor) else float(v)
                     train_losses_dict[k] = train_losses_dict.get(k, 0) + v_val * accum_steps
@@ -336,7 +327,7 @@ def train_v3():
                         loss = warmup_criterion(outputs, targets)
                     else:
                         dem = inputs[:, 2:3]
-                        loss_dict = loss_scheduler(outputs, targets, epoch=epoch, dem=dem, return_dict=True)
+                        loss_dict = physics_loss(outputs, targets, dem=dem, return_dict=True)
                         loss = loss_dict['total']
 
                 val_loss += loss.item()
@@ -353,7 +344,6 @@ def train_v3():
             'train_loss': float(train_loss),
             'val_loss': float(val_loss),
             'lr': float(current_lr),
-            'stage': int(current_stage),
             'time': float(epoch_time),
         }
         for k, v in train_losses_dict.items():
@@ -364,11 +354,10 @@ def train_v3():
         writer.add_scalar('Loss/train', train_loss, epoch)
         writer.add_scalar('Loss/val', val_loss, epoch)
         writer.add_scalar('LR', current_lr, epoch)
-        writer.add_scalar('Stage', current_stage, epoch)
         for k, v in train_losses_dict.items():
             writer.add_scalar(f'TrainLoss/{k}', v, epoch)
 
-        print(f'\nEpoch {epoch+1}/{epochs} [Stage {current_stage}]')
+        print(f'\nEpoch {epoch+1}/{epochs}')
         print(f'   Train Loss: {train_loss:.6f}')
         print(f'   Val Loss:   {val_loss:.6f}')
         print(f'   LR:         {current_lr:.7f}')

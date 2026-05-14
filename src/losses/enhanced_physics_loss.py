@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Optional, Dict, List
+from typing import Optional, Dict
 
 
 class EnhancedPhysicsLoss(nn.Module):
@@ -40,7 +40,7 @@ class EnhancedPhysicsLoss(nn.Module):
         self,
         mse_weight: float = 1.0,
         l1_weight: float = 0.5,
-        mass_conservation_weight: float = 0.1,
+        mass_conservation_weight: float = 0.001,
         boundary_layer_weight: float = 0.05,
         terrain_penalty_weight: float = 0.1,
         k_positive_weight: float = 0.05,
@@ -163,7 +163,7 @@ class EnhancedPhysicsLoss(nn.Module):
         z_levels = self.height_levels[1:n_bl].view(1, n_bl - 1, 1, 1).to(output.device)
 
         if roughness is not None:
-            z0 = roughness.squeeze(1).unsqueeze(1)  # (B, 1, H, W)
+            z0 = roughness.view(roughness.shape[0], -1, roughness.shape[-2], roughness.shape[-1])[:, 0:1]
             z0 = torch.clamp(z0, min=0.01, max=5.0)
             log_zi_z0 = torch.log(torch.clamp(z_levels / z0, min=0.01, max=100.0) + 1e-8)
             log_zref_z0 = torch.log(torch.clamp(z_ref / z0, min=0.01, max=100.0) + 1e-8)
@@ -234,17 +234,13 @@ class EnhancedPhysicsLoss(nn.Module):
 
     @staticmethod
     def _compute_dem_gradient(dem: torch.Tensor) -> tuple:
-        """计算 DEM 梯度 (Sobel 算子)"""
-        # Sobel 核
         sobel_x = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]],
                                 dtype=dem.dtype, device=dem.device).view(1, 1, 3, 3)
         sobel_y = torch.tensor([[-1, -2, -1], [0, 0, 0], [1, 2, 1]],
                                 dtype=dem.dtype, device=dem.device).view(1, 1, 3, 3)
-        # dem: (B, 1, H, W)
-        dz_dx = F.conv2d(dem, sobel_x, padding=1)
-        dz_dy = F.conv2d(dem, sobel_y, padding=1)
-        # 归一化到物理坡度 (除以 2 * pixel_distance)
-        # 这里 pixel_distance = 1 (像素单位), 实际 dx=30m 在损失权重中考虑
+        dem_4d = dem.view(dem.shape[0], -1, dem.shape[-2], dem.shape[-1])[:, 0:1]
+        dz_dx = F.conv2d(dem_4d, sobel_x, padding=1)
+        dz_dy = F.conv2d(dem_4d, sobel_y, padding=1)
         return dz_dx.squeeze(1), dz_dy.squeeze(1)
     
     def compute_tke_regularization(self, output: torch.Tensor) -> Dict[str, torch.Tensor]:
@@ -276,49 +272,6 @@ class EnhancedPhysicsLoss(nn.Module):
 
         return losses
 
-    def compute_k_terrain_constraint(self, output: torch.Tensor, dem: Optional[torch.Tensor] = None) -> torch.Tensor:
-        """
-        k 物理约束损失
-
-        物理依据：
-        1. 地面层 TKE 与地形坡度正相关: k_ground ~ slope_magnitude * 0.01
-        2. TKE 与速度梯度平方正相关: k ~ (du/dz)^2 + (dv/dz)^2
-
-        Args:
-            output: (B, L, 4, H, W)
-            dem: (B, 1, H, W) 地形高程
-
-        Returns:
-            k 物理约束损失标量
-        """
-        B, L, C, H, W = output.shape
-        k = output[:, :, 3]
-        loss = torch.tensor(0.0, device=output.device)
-
-        if dem is not None and L > 0:
-            dz_dx, dz_dy = self._compute_dem_gradient(dem)
-            slope = torch.sqrt(dz_dx ** 2 + dz_dy ** 2 + 1e-6)
-
-            # Ground level correlation: k_ground ~ slope * 0.01
-            k_ground = k[:, 0]
-            expected_k_ground = slope.squeeze(1) * 0.01
-            loss = loss + F.mse_loss(k_ground, expected_k_ground)
-
-        # Velocity gradient correlation: k ~ (du/dz)^2 + (dv/dz)^2
-        if L > 1:
-            dudz = (output[:, 1:, 0] - output[:, :-1, 0]) / self.dz
-            dvdz = (output[:, 1:, 1] - output[:, :-1, 1]) / self.dz
-            vel_grad_sq = dudz ** 2 + dvdz ** 2
-
-            k_levels = k[:, 1:]
-            expected_k = vel_grad_sq * 0.1
-            loss = loss + F.mse_loss(k_levels, expected_k)
-
-        if torch.isnan(loss) or torch.isinf(loss):
-            loss = torch.tensor(0.0, device=output.device)
-
-        return loss
-    
     def compute_gradient_smoothness_loss(
         self,
         pred: torch.Tensor,
@@ -466,8 +419,6 @@ class EnhancedPhysicsLoss(nn.Module):
         loss_k_positive = tke_losses['k_positive'] * self.k_positive_weight
         loss_k_reasonable = tke_losses['k_reasonable'] * 0.02
 
-        loss_k_terrain = self.compute_k_terrain_constraint(pred, dem) * (self.k_specialized_weight * 0.2)
-
         loss_gradient = self.compute_gradient_smoothness_loss(pred, target) * self.gradient_smoothness_weight
 
         # K-specialized loss (分离处理)
@@ -497,9 +448,8 @@ class EnhancedPhysicsLoss(nn.Module):
                 loss_terrain +
                 loss_k_positive * 0.2 +  # 增强k正性约束
                 loss_k_reasonable * 0.05 +
-                loss_k_var +  # 方差保持
-                loss_k_height +  # 高度剖面
-                loss_k_terrain +  # k地形/梯度物理约束
+                loss_k_var +
+                loss_k_height +
                 loss_gradient
             )
         else:
@@ -538,7 +488,6 @@ class EnhancedPhysicsLoss(nn.Module):
                 losses['k_variance'] = loss_k_var.detach()
                 losses['k_height_profile'] = loss_k_height.detach()
                 losses['log_k_l1'] = loss_log_k_l1.detach()
-                losses['k_terrain'] = loss_k_terrain.detach()
             
             var_names = ['u', 'v', 'w', 'k']
             for i, name in enumerate(var_names):
@@ -556,115 +505,38 @@ class EnhancedPhysicsLoss(nn.Module):
             return total_loss
 
 
-class ProgressiveLossScheduler(nn.Module):
-    """
-    渐进式损失调度器
-    
-    用于两阶段/多阶段训练策略：
-    - 阶段1：主要优化数据保真损失
-    - 阶段2：逐渐引入物理约束
-    - 阶段3：平衡数据和物理约束
-    
-    通过调整各项损失的权重实现渐进式训练
-    """
-    def __init__(
-        self,
-        base_loss: EnhancedPhysicsLoss,
-        n_stages: int = 3,
-        stage_epochs: List[int] = [30, 40, 30],
-    ):
+class PhysicsLossWarmupScheduler(nn.Module):
+    def __init__(self, base_loss, warmup_epochs=10, start_epoch=5):
         super().__init__()
-        
         self.base_loss = base_loss
-        self.n_stages = n_stages
-        self.stage_epochs = stage_epochs
-        
-        self.stage_configs = [
-            {
-                'mse_weight': 1.0,
-                'l1_weight': 0.5,
-                'mass_conservation_weight': 0.01,
-                'boundary_layer_weight': 0.0,
-                'terrain_penalty_weight': 0.01,
-                'k_positive_weight': 0.2,
-                'gradient_smoothness_weight': 0.05,
-                'k_specialized_weight': 0.5,
-            },
-            {
-                'mse_weight': 1.0,
-                'l1_weight': 0.5,
-                'mass_conservation_weight': 0.05,
-                'boundary_layer_weight': 0.02,
-                'terrain_penalty_weight': 0.05,
-                'k_positive_weight': 0.3,
-                'gradient_smoothness_weight': 0.08,
-                'k_specialized_weight': 0.7,
-            },
-            {
-                'mse_weight': 1.0,
-                'l1_weight': 0.5,
-                'mass_conservation_weight': 0.1,
-                'boundary_layer_weight': 0.05,
-                'terrain_penalty_weight': 0.1,
-                'k_positive_weight': 0.4,
-                'gradient_smoothness_weight': 0.1,
-                'k_specialized_weight': 1.0,
-            },
-        ]
-        
-        assert len(self.stage_configs) >= n_stages
-    
-    def get_current_stage(self, epoch: int) -> int:
-        """根据当前epoch确定训练阶段"""
-        cumulative_epochs = 0
-        for stage in range(self.n_stages):
-            cumulative_epochs += self.stage_epochs[stage]
-            if epoch < cumulative_epochs:
-                return stage
-        return self.n_stages - 1
-    
-    def update_weights_for_stage(self, stage: int):
-        """更新当前阶段的损失权重"""
-        config = self.stage_configs[min(stage, len(self.stage_configs) - 1)]
+        self.warmup_epochs = warmup_epochs
+        self.start_epoch = start_epoch
+        self._target_weights = {}
+        self._store_target_weights()
 
-        self.base_loss.mse_weight = config['mse_weight']
-        self.base_loss.l1_weight = config['l1_weight']
-        self.base_loss.mass_conservation_weight = config['mass_conservation_weight']
-        self.base_loss.boundary_layer_weight = config['boundary_layer_weight']
-        self.base_loss.terrain_penalty_weight = config['terrain_penalty_weight']
-        self.base_loss.k_positive_weight = config['k_positive_weight']
-        self.base_loss.gradient_smoothness_weight = config['gradient_smoothness_weight']
+    def _store_target_weights(self):
+        for key in ['mass_conservation_weight', 'boundary_layer_weight',
+                     'terrain_penalty_weight', 'k_positive_weight',
+                     'gradient_smoothness_weight']:
+            self._target_weights[key] = getattr(self.base_loss, key)
+        # k_specialized_weight is NOT warmup-controlled:
+        # when use_k_transform=True, k is separated from unified MSE,
+        # so k_specialized_weight must always be active to provide k gradients.
 
-        if 'k_specialized_weight' in config:
-            self.base_loss.k_specialized_weight = config['k_specialized_weight']
-    
-    def forward(
-        self,
-        pred: torch.Tensor,
-        target: torch.Tensor,
-        epoch: int,
-        dem: Optional[torch.Tensor] = None,
-        roughness: Optional[torch.Tensor] = None,
-        return_dict: bool = True
-    ) -> dict:
-        """
-        计算当前阶段的损失
+    def _update_weights(self, epoch):
+        if epoch < self.start_epoch:
+            for key, target in self._target_weights.items():
+                setattr(self.base_loss, key, 0.0)
+        elif epoch < self.start_epoch + self.warmup_epochs:
+            progress = (epoch - self.start_epoch + 1) / self.warmup_epochs
+            for key, target in self._target_weights.items():
+                setattr(self.base_loss, key, target * progress)
+        else:
+            for key, target in self._target_weights.items():
+                setattr(self.base_loss, key, target)
 
-        Args:
-            pred: 模型预测
-            target: 真实值
-            epoch: 当前训练轮次
-            dem: 可选的地形高程
-            roughness: 可选的地表粗糙度
-            return_dict: 是否返回详细损失字典
+    def forward(self, pred, target, epoch, dem=None, roughness=None, return_dict=True):
+        self._update_weights(epoch)
+        return self.base_loss(pred, target, dem=dem, roughness=roughness, return_dict=return_dict)
 
-        Returns:
-            损失字典
-        """
-        current_stage = self.get_current_stage(epoch)
-        self.update_weights_for_stage(current_stage)
 
-        losses = self.base_loss(pred, target, dem=dem, roughness=roughness, return_dict=return_dict)
-        losses['current_stage'] = current_stage
-
-        return losses

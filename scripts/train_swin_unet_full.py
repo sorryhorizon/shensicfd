@@ -39,7 +39,7 @@ from torch.utils.tensorboard import SummaryWriter
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.models.swin_unet_lite import create_lite_model, PhysicsInformedSwinUNetLite
-from src.losses.enhanced_physics_loss import EnhancedPhysicsLoss, ProgressiveLossScheduler
+from src.losses.enhanced_physics_loss import EnhancedPhysicsLoss
 from src.data.fuxi_cfd_dataset import FuXiCFDDataset, create_dataloaders
 
 
@@ -381,16 +381,6 @@ class Trainer:
             use_k_transform=config.get('use_k_transform', True),
         )
         
-        self.scheduler = ProgressiveLossScheduler(
-            base_loss=self.criterion,
-            n_stages=3,
-            stage_epochs=[
-                config.get('stage1_epochs', 30),
-                config.get('stage2_epochs', 40),
-                config.get('stage3_epochs', 30),
-            ],
-        )
-        
         self.optimizer = self._create_optimizer()
         self.lr_scheduler = self._create_scheduler()
         
@@ -456,11 +446,11 @@ class Trainer:
             if self.scaler is not None:
                 with autocast():
                     outputs = self.model(inputs)
-                    losses = self.scheduler(
+                    losses = self.criterion(
                         outputs, targets,
-                        epoch=epoch,
                         dem=dem,
                         roughness=roughness,
+                        return_dict=True,
                     )
                     loss = losses['total']
                 
@@ -486,11 +476,11 @@ class Trainer:
                     self.scaler.update()
             else:
                 outputs = self.model(inputs)
-                losses = self.scheduler(
+                losses = self.criterion(
                     outputs, targets,
-                    epoch=epoch,
                     dem=dem,
                     roughness=roughness,
+                    return_dict=True,
                 )
                 loss = losses['total']
                 
@@ -534,11 +524,9 @@ class Trainer:
                     loss_dict={k: v for k, v in losses.items() 
                               if isinstance(v, (int, float)) or (isinstance(v, torch.Tensor) and v.numel() == 1)},
                     lr=current_lr,
-                    stage=losses.get('current_stage', 0),
                 )
-                
+
                 print(f'  [{batch_idx+1}/{num_batches}] Loss: {loss.item():.4f} '
-                      f'Stage: {int(losses.get("current_stage", 0))+1} '
                       f'LR: {current_lr:.6f}')
         
         avg_losses = {}

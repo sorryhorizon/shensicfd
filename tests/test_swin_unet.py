@@ -640,44 +640,31 @@ class TestEnhancedPhysicsLoss:
             return False
     
     @staticmethod
-    def test_progressive_scheduler():
-        """测试渐进式损失调度器"""
-        from src.losses.enhanced_physics_loss import (
-            EnhancedPhysicsLoss, ProgressiveLossScheduler
-        )
-        
-        print_section("Test 9: 渐进式损失调度器")
-        
-        base_loss = EnhancedPhysicsLoss()
-        scheduler = ProgressiveLossScheduler(base_loss, n_stages=3)
-        
+    def test_physics_loss():
+        """测试物理约束损失函数"""
+        from src.losses.enhanced_physics_loss import EnhancedPhysicsLoss
+
+        print_section("Test 9: 物理约束损失函数")
+
+        loss_fn = EnhancedPhysicsLoss()
+
         B, L, C, H, W = 2, 27, 4, 64, 64
         pred = torch.randn(B, L, C, H, W)
         target = torch.randn(B, L, C, H, W)
-        
+
         try:
-            test_epochs = [0, 25, 50, 80]
-            stages = []
-            
-            for epoch in test_epochs:
-                losses = scheduler(pred, target, epoch=epoch)
-                stage = losses['current_stage']
-                stages.append(stage)
-                
-                assert 'current_stage' in losses
-                assert isinstance(stage, int)
-                
-                print(f"           Epoch {epoch:3d} → Stage {stage}, Loss: {losses['total'].item():.6f}")
-            
-            assert stages[0] == 0, f"Epoch 0应该在Stage 0, 但在Stage {stages[0]}"
-            assert stages[-1] == 2, f"最后epoch应该在Stage 2, 但在Stage {stages[-1]}"
-            
-            print_test("阶段切换正确", True, f"阶段序列: {stages}")
-            
+            losses = loss_fn(pred, target, return_dict=True)
+
+            assert 'total' in losses
+            assert 'mse' in losses
+            assert isinstance(losses['total'], torch.Tensor)
+
+            print_test("损失计算正确", True, f"total={losses['total'].item():.6f}")
+
             return True
-            
+
         except Exception as e:
-            print_test("渐进式调度器测试失败", False, str(e))
+            print_test("物理损失测试失败", False, str(e))
             import traceback
             traceback.print_exc()
             return False

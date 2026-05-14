@@ -12,41 +12,44 @@ from .swin_transformer import (
 
 class LightweightMultiModalEncoder(nn.Module):
     """
-    轻量级多模态输入编码器（3路独立编码，无显式坡度输入）
+    轻量级多模态输入编码器（4路独立编码，含DEM梯度分支）
 
     改进：
     - wind: 先在原始9x9分辨率编码，再上采样（避免插值噪声）
     - dem: 单独编码，让模型自己从DEM中学坡度
     - roughness: 单独编码
+    - slope: 编码DEM梯度(dz_dx, dz_dy)，显式提供坡度信息
     """
-    def __init__(self, in_channels: int = 4, base_dim: int = 32, target_size: Tuple[int, int] = (300, 300)):
+    def __init__(self, in_channels: int = 6, base_dim: int = 32, target_size: Tuple[int, int] = (300, 300)):
         super().__init__()
         self.target_size = target_size
 
-        # 风场编码器: 2ch -> base_dim (在9x9分辨率上编码)
         self.wind_encoder = nn.Sequential(
             nn.Conv2d(2, base_dim, kernel_size=3, padding=1, bias=False),
             RMSGroupNorm(base_dim),
             nn.GELU(),
         )
 
-        # DEM编码器: 单独处理海拔标量场（模型自己学坡度）
         self.dem_encoder = nn.Sequential(
             nn.Conv2d(1, base_dim, kernel_size=3, padding=1, bias=False),
             RMSGroupNorm(base_dim),
             nn.GELU(),
         )
 
-        # 粗糙度编码器
         self.roughness_encoder = nn.Sequential(
             nn.Conv2d(1, base_dim, kernel_size=3, padding=1, bias=False),
             RMSGroupNorm(base_dim),
             nn.GELU(),
         )
 
-        # 融合: 3路特征 -> base_dim
+        self.slope_encoder = nn.Sequential(
+            nn.Conv2d(2, base_dim, kernel_size=3, padding=1, bias=False),
+            RMSGroupNorm(base_dim),
+            nn.GELU(),
+        )
+
         self.fusion_conv = nn.Sequential(
-            nn.Conv2d(base_dim * 3, base_dim, kernel_size=1, bias=False),
+            nn.Conv2d(base_dim * 4, base_dim, kernel_size=1, bias=False),
             RMSGroupNorm(base_dim),
             nn.GELU(),
         )
@@ -55,15 +58,16 @@ class LightweightMultiModalEncoder(nn.Module):
         wind = x[:, :2]
         dem = x[:, 2:3]
         rough = x[:, 3:4]
+        slope = x[:, 4:6]
 
-        # 风场: 先编码，再上采样
         wind_feat = self.wind_encoder(wind)
         wind_feat = F.interpolate(wind_feat, size=self.target_size, mode='bilinear', align_corners=False)
 
         dem_feat = self.dem_encoder(dem)
         rough_feat = self.roughness_encoder(rough)
+        slope_feat = self.slope_encoder(slope)
 
-        fused = torch.cat([wind_feat, dem_feat, rough_feat], dim=1)
+        fused = torch.cat([wind_feat, dem_feat, rough_feat, slope_feat], dim=1)
         output = self.fusion_conv(fused)
 
         return output
@@ -145,7 +149,7 @@ class PhysicsInformedSwinUNetLite(nn.Module):
     """
     def __init__(
         self,
-        in_channels: int = 4,
+        in_channels: int = 6,
         out_channels: int = 4,
         n_levels: int = 27,
         base_channels: int = 32,
@@ -401,7 +405,7 @@ class AdaptiveVerticalDecoderLite(nn.Module):
         height_embs = self.height_embeddings(level_indices)
         height_embs = height_embs.view(self.n_levels, -1, 1, 1)
 
-        chunk_size = 3
+        chunk_size = 9
         outputs = []
         for start in range(0, self.n_levels, chunk_size):
             end = min(start + chunk_size, self.n_levels)
@@ -431,15 +435,15 @@ def create_lite_model(config: dict = None) -> PhysicsInformedSwinUNetLite:
         config = {}
     
     default_config = {
-        'in_channels': 4,
+        'in_channels': 6,
         'out_channels': 4,
         'n_levels': 27,
-        'base_channels': 32,
+        'base_channels': 64,
         'channel_multipliers': [1, 2, 4, 8],
         'encoder_depths': [1, 1, 1, 1],
         'decoder_depths': [1, 1, 1, 1],
-        'bottleneck_depth': 4,
-        'num_heads': 4,
+        'bottleneck_depth': 6,
+        'num_heads': 8,
         'window_size': (5, 5),
         'dropout': 0.1,
         'drop_path_rate': 0.05,
@@ -463,7 +467,7 @@ if __name__ == "__main__":
     print(f"   内存占用: {params['total_mb']:.1f} MB")
     
     import torch
-    x = torch.randn(1, 4, 300, 300)
+    x = torch.randn(1, 6, 300, 300)
 
     with torch.no_grad():
         y = model(x)

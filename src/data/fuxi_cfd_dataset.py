@@ -212,24 +212,27 @@ class FuXiCFDDataset(Dataset):
         """归一化输入: (x - mean) / std"""
         if not self.normalize or self.stats is None:
             return input_tensor
-        mean = torch.from_numpy(self.stats['input_mean']).view(6, 1, 1)
-        std = torch.from_numpy(self.stats['input_std']).view(6, 1, 1)
+        device = input_tensor.device
+        mean = torch.from_numpy(self.stats['input_mean']).view(6, 1, 1).to(device)
+        std = torch.from_numpy(self.stats['input_std']).view(6, 1, 1).to(device)
         return (input_tensor - mean) / std
-    
+
     def normalize_output(self, output_tensor: torch.Tensor) -> torch.Tensor:
         """归一化输出: (x - mean) / std, output shape: (27, 4, 300, 300)"""
         if not self.normalize or self.stats is None:
             return output_tensor
-        mean = torch.from_numpy(self.stats['output_mean']).view(1, 4, 1, 1)
-        std = torch.from_numpy(self.stats['output_std']).view(1, 4, 1, 1)
+        device = output_tensor.device
+        mean = torch.from_numpy(self.stats['output_mean']).view(1, 4, 1, 1).to(device)
+        std = torch.from_numpy(self.stats['output_std']).view(1, 4, 1, 1).to(device)
         return (output_tensor - mean) / std
-    
+
     def denormalize_output(self, output_tensor: torch.Tensor) -> torch.Tensor:
         """反归一化输出: x * std + mean"""
         if not self.normalize or self.stats is None:
             return output_tensor
-        mean = torch.from_numpy(self.stats['output_mean']).view(1, 4, 1, 1)
-        std = torch.from_numpy(self.stats['output_std']).view(1, 4, 1, 1)
+        device = output_tensor.device
+        mean = torch.from_numpy(self.stats['output_mean']).view(1, 4, 1, 1).to(device)
+        std = torch.from_numpy(self.stats['output_std']).view(1, 4, 1, 1).to(device)
         return output_tensor * std + mean
     
     def _get_cache_path(self) -> str:
@@ -462,6 +465,36 @@ class FuXiCFDDataset(Dataset):
                 return self._get_fallback_item(idx, retries)
 
 
+class RandomFlipTransform:
+    """随机水平/垂直翻转数据增强"""
+    def __init__(self, p_horizontal: float = 0.5, p_vertical: float = 0.5):
+        self.p_horizontal = p_horizontal
+        self.p_vertical = p_vertical
+
+    def __call__(self, input_tensor: torch.Tensor, output_tensor: torch.Tensor):
+        # input: (6, H, W) -> [u, v, dem, roughness, dz_dx, dz_dy]
+        # output: (27, 4, H, W) -> [u, v, w, k]
+        if random.random() < self.p_horizontal:
+            input_tensor = torch.flip(input_tensor, dims=[-1])
+            output_tensor = torch.flip(output_tensor, dims=[-1])
+            # u (input[0]) and u (output[:,0]) reverse direction
+            input_tensor[0] = -input_tensor[0]
+            output_tensor[:, 0] = -output_tensor[:, 0]
+            # dz_dx (input[4]) reverses sign
+            input_tensor[4] = -input_tensor[4]
+
+        if random.random() < self.p_vertical:
+            input_tensor = torch.flip(input_tensor, dims=[-2])
+            output_tensor = torch.flip(output_tensor, dims=[-2])
+            # v (input[1]) and v (output[:,1]) reverse direction
+            input_tensor[1] = -input_tensor[1]
+            output_tensor[:, 1] = -output_tensor[:, 1]
+            # dz_dy (input[5]) reverses sign
+            input_tensor[5] = -input_tensor[5]
+
+        return input_tensor, output_tensor
+
+
 def create_dataloaders(
     data_dir: str,
     batch_size: int = 4,
@@ -471,6 +504,7 @@ def create_dataloaders(
     test_ratio: float = 0.1,
     pin_memory: bool = True,
     prefetch_to_memory: bool = False,
+    transform=None,
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
     """创建训练/验证/测试数据加载器"""
     train_dataset = FuXiCFDDataset(
@@ -481,6 +515,7 @@ def create_dataloaders(
         test_ratio=test_ratio,
         normalize=True,
         prefetch_to_memory=prefetch_to_memory,
+        transform=transform,
     )
     
     val_dataset = FuXiCFDDataset(
