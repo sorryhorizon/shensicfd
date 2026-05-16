@@ -31,7 +31,7 @@ def mae(pred, target):
 
 device = torch.device('cuda:0')
 data_dir = '/mnt/sdata/jz/fuxi_cfd/dataset'
-ckpt_path = 'checkpoints/best_model_baseline.pt'
+ckpt_path = 'checkpoints/shensiv2_baseline/best_model.pt'
 
 print('Loading dataset...')
 test_dataset = FuXiCFDDataset(data_dir, split='test', normalize=True, prefetch_to_memory=False)
@@ -44,8 +44,8 @@ if hasattr(test_dataset, 'stats') and test_dataset.stats is not None:
     output_std = torch.from_numpy(test_dataset.stats['output_std']).float()
 
 model = create_lite_model(config={
-    'base_channels': 32, 'bottleneck_depth': 4, 'window_size': (5, 5),
-    'dropout': 0.2, 'drop_path_rate': 0.1,
+    'in_channels': 4, 'base_channels': 32, 'bottleneck_depth': 4, 'window_size': (5, 5),
+    'dropout': 0.2, 'drop_path_rate': 0.1, 'num_heads': 4,
     'use_physics_constraint': False,
     'output_mean': output_mean, 'output_std': output_std,
 }).to(device)

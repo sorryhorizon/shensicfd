@@ -212,6 +212,18 @@ def train():
 
     writer = SummaryWriter(log_dir=str(log_dir / 'tensorboard')) if is_main else None
 
+    # Training log file
+    log_file = None
+    if is_main:
+        log_file = open(log_dir / 'train.log', 'a')
+
+    def log_print(msg):
+        """Print to stdout and write to log file."""
+        print(msg, flush=True)
+        if log_file:
+            log_file.write(msg + '\n')
+            log_file.flush()
+
     best_val_loss = float('inf')
     patience_counter = 0
     history = []
@@ -455,18 +467,18 @@ def train():
             remaining = epochs - (epoch + 1)
             eta_hours = avg_epoch_time * remaining / 3600
 
-            print(f'\nEpoch {epoch+1}/{epochs}')
-            print(f'   Train Loss: {train_loss:.6f}')
-            print(f'   Val Loss:   {val_loss:.6f}')
-            print(f'   LR:         {current_lr:.7f}')
-            print(f'   Time:       {epoch_time:.1f}s')
-            print(f'   GPU Peak: {mem_used:.1f}GB, ETA: {eta_hours:.1f}h')
+            log_print(f'\nEpoch {epoch+1}/{epochs}')
+            log_print(f'   Train Loss: {train_loss:.6f}')
+            log_print(f'   Val Loss:   {val_loss:.6f}')
+            log_print(f'   LR:         {current_lr:.7f}')
+            log_print(f'   Time:       {epoch_time:.1f}s')
+            log_print(f'   GPU Peak: {mem_used:.1f}GB, ETA: {eta_hours:.1f}h')
             r2_str = ', '.join(f'{n}={val_r2.get(n, 0.0):.3f}' for n in var_names)
             rmse_str = ', '.join(f'{n}={val_rmse.get(n, 0.0):.3f}' for n in var_names)
-            print(f'   Val R2:     {r2_str}')
-            print(f'   Val RMSE:   {rmse_str}')
+            log_print(f'   Val R2:     {r2_str}')
+            log_print(f'   Val RMSE:   {rmse_str}')
             loss_str = ', '.join(f'{k}={v:.4f}' for k, v in train_losses_dict.items())
-            print(f'   Train Losses: {loss_str}')
+            log_print(f'   Train Losses: {loss_str}')
 
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
@@ -489,7 +501,7 @@ def train():
                 }, ckpt_dir / 'best_model_hybrid.pt')
                 if ema:
                     ema.restore()
-                print(f'   Best model saved! (val_loss: {val_loss:.6f})')
+                log_print(f'   Best model saved! (val_loss: {val_loss:.6f})')
             else:
                 patience_counter += 1
                 print(f'   Patience: {patience_counter}/{patience}')
@@ -535,7 +547,10 @@ def train():
         if writer:
             writer.close()
         print('\nTraining complete!')
-        print(f'   Best val loss: {best_val_loss:.6f}')
+        log_print(f'   Best val loss: {best_val_loss:.6f}')
+
+    if log_file:
+        log_file.close()
 
     dist.barrier()
     cleanup_ddp()
