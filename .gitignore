@@ -43,3 +43,6 @@ training_logs/
 
 # Docs (local only)
 docs/
+
+# Old version files (kept locally for visualization, not tracked)
+src/models/swin_unet_v5.py

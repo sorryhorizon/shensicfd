@@ -71,8 +71,22 @@ def load_model(version, ckpt_path, device, output_mean, output_std):
         model.load_state_dict(ckpt['model_state_dict'])
         return model, 'direct'
 
+    elif version == 'v6':
+        from src.models.swin_unet_v6 import SwinUNetV6
+        model = SwinUNetV6(
+            in_channels=6, n_levels=27, base_channels=48,
+            channel_multipliers=[1, 2, 4, 8],
+            bottleneck_depth=4, num_heads=4, window_size=(5, 5),
+            dropout=0.2, drop_path_rate=0.1,
+            use_cross_attention=True,
+            output_mean=output_mean, output_std=output_std,
+        ).to(device)
+        ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
+        model.load_state_dict(ckpt['model_state_dict'])
+        return model, 'direct'
+
     else:
-        raise ValueError(f"Unknown version: {version}. Supported: v4, v5")
+        raise ValueError(f"Unknown version: {version}. Supported: v4, v5, v6")
 
 
 def run_inference(model, test_loader, device, call_type, use_diffusion=False):
