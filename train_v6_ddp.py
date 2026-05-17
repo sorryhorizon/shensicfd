@@ -155,7 +155,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description='ShenSi-CFD V6 DDP Training')
     parser.add_argument('--resume', action='store_true', help='Resume from latest checkpoint')
     parser.add_argument('--batch-size', type=int, default=4, help='Batch size per GPU')
-    parser.add_argument('--epochs', type=int, default=100, help='Total training epochs')
+    parser.add_argument('--epochs', type=int, default=40, help='Total training epochs')
     parser.add_argument('--num-workers', type=int, default=0, help='DataLoader num_workers')
     parser.add_argument('--charb-weight', type=float, default=1.0, help='Charbonnier loss weight')
     parser.add_argument('--l1-weight', type=float, default=0.3, help='L1 loss weight')

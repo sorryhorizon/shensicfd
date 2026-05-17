@@ -18,12 +18,108 @@ from typing import Optional, Tuple, List
 
 from .encoder import RMSGroupNorm
 from .swin_transformer import SwinTransformerStage, DropPath
-from .swin_unet_v5 import (
-    LightweightMultiModalEncoder,
-    EfficientUNetDown,
-    EfficientUNetUp,
-    CrossAttentionModule,
-)
+
+
+class LightweightMultiModalEncoder(nn.Module):
+    def __init__(self, in_channels: int = 6, base_dim: int = 48, target_size: Tuple[int, int] = (300, 300)):
+        super().__init__()
+        self.target_size = target_size
+        self.wind_encoder = nn.Sequential(
+            nn.Conv2d(2, base_dim, kernel_size=3, padding=1, bias=False),
+            RMSGroupNorm(base_dim), nn.GELU(),
+        )
+        self.dem_encoder = nn.Sequential(
+            nn.Conv2d(1, base_dim, kernel_size=3, padding=1, bias=False),
+            RMSGroupNorm(base_dim), nn.GELU(),
+        )
+        self.roughness_encoder = nn.Sequential(
+            nn.Conv2d(1, base_dim, kernel_size=3, padding=1, bias=False),
+            RMSGroupNorm(base_dim), nn.GELU(),
+        )
+        self.slope_encoder = nn.Sequential(
+            nn.Conv2d(2, base_dim, kernel_size=3, padding=1, bias=False),
+            RMSGroupNorm(base_dim), nn.GELU(),
+        )
+        self.fusion_conv = nn.Sequential(
+            nn.Conv2d(base_dim * 4, base_dim, kernel_size=1, bias=False),
+            RMSGroupNorm(base_dim), nn.GELU(),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        wind_feat = self.wind_encoder(x[:, :2])
+        wind_feat = F.interpolate(wind_feat, size=self.target_size, mode='bilinear', align_corners=False)
+        dem_feat = self.dem_encoder(x[:, 2:3])
+        rough_feat = self.roughness_encoder(x[:, 3:4])
+        slope_feat = self.slope_encoder(x[:, 4:6])
+        fused = torch.cat([wind_feat, dem_feat, rough_feat, slope_feat], dim=1)
+        return self.fusion_conv(fused)
+
+
+class EfficientUNetDown(nn.Module):
+    def __init__(self, in_ch: int, out_ch: int):
+        super().__init__()
+        self.conv = nn.Sequential(
+            nn.Conv2d(in_ch, out_ch, kernel_size=3, padding=1, bias=False),
+            RMSGroupNorm(out_ch), nn.GELU(),
+            nn.Conv2d(out_ch, out_ch, kernel_size=3, padding=1, bias=False),
+            RMSGroupNorm(out_ch), nn.GELU(),
+        )
+        self.down = nn.MaxPool2d(kernel_size=2, stride=2)
+
+    def forward(self, x):
+        skip = self.conv(x)
+        down = self.down(skip)
+        return down, skip
+
+
+class EfficientUNetUp(nn.Module):
+    def __init__(self, in_ch: int, skip_ch: int, out_ch: int):
+        super().__init__()
+        self.up = nn.Sequential(
+            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False),
+            nn.Conv2d(in_ch, in_ch // 2, kernel_size=1, bias=False),
+            RMSGroupNorm(in_ch // 2), nn.GELU(),
+        )
+        mid_ch = in_ch // 2
+        self.fusion_conv = nn.Sequential(
+            nn.Conv2d(mid_ch + skip_ch, out_ch, kernel_size=3, padding=1, bias=False),
+            RMSGroupNorm(out_ch), nn.GELU(),
+            nn.Conv2d(out_ch, out_ch, kernel_size=3, padding=1, bias=False),
+            RMSGroupNorm(out_ch), nn.GELU(),
+        )
+
+    def forward(self, x, skip):
+        x = self.up(x)
+        if x.size(2) != skip.size(2) or x.size(3) != skip.size(3):
+            x = F.interpolate(x, size=(skip.size(2), skip.size(3)), mode='bilinear', align_corners=False)
+        x = torch.cat([x, skip], dim=1)
+        return self.fusion_conv(x)
+
+
+class CrossAttentionModule(nn.Module):
+    def __init__(self, dim: int, num_heads: int = 4):
+        super().__init__()
+        self.num_heads = num_heads
+        self.head_dim = dim // num_heads
+        self.scale = self.head_dim ** -0.5
+        self.q_proj = nn.Linear(dim, dim)
+        self.kv_proj = nn.Linear(dim, dim * 2)
+        self.out_proj = nn.Linear(dim, dim)
+        self.norm = nn.LayerNorm(dim)
+
+    def forward(self, query: torch.Tensor, context: torch.Tensor) -> torch.Tensor:
+        B, C, H, W = query.shape
+        q_flat = query.flatten(2).transpose(1, 2)
+        ctx_flat = context.flatten(2).transpose(1, 2)
+        q = self.q_proj(q_flat).view(B, -1, self.num_heads, self.head_dim).transpose(1, 2)
+        kv = self.kv_proj(ctx_flat).view(B, -1, 2, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
+        k, v = kv.unbind(0)
+        attn = (q @ k.transpose(-2, -1)) * self.scale
+        attn = F.softmax(attn, dim=-1)
+        out = (attn @ v).transpose(1, 2).contiguous().view(B, -1, C)
+        out = self.out_proj(out)
+        out = self.norm(q_flat + out)
+        return out.transpose(1, 2).view(B, C, H, W)
 
 
 class VerticalSmoother(nn.Module):
