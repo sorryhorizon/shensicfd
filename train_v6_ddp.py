@@ -159,7 +159,7 @@ def parse_args():
     parser.add_argument('--num-workers', type=int, default=0, help='DataLoader num_workers')
     parser.add_argument('--charb-weight', type=float, default=1.0, help='Charbonnier loss weight')
     parser.add_argument('--l1-weight', type=float, default=0.3, help='L1 loss weight')
-    parser.add_argument('--spectral-weight', type=float, default=0.1, help='Spectral loss weight')
+    parser.add_argument('--spectral-weight', type=float, default=0.01, help='Spectral loss weight')
     parser.add_argument('--k-weight', type=float, default=2.0, help='Additional k loss weight')
     parser.add_argument('--w-weight', type=float, default=1.5, help='Additional w loss weight')
     parser.add_argument('--k-spatial-alpha', type=float, default=2.0, help='Spatial weighting alpha for k')
