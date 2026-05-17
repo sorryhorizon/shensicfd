@@ -104,10 +104,17 @@ class FuXiCFDDataset(Dataset):
                 'output_mean': np_stats['output_mean'].astype(np.float32),
                 'output_std': np_stats['output_std'].astype(np.float32),
             }
+            # Validate: output stats must be per-level (27, 4)
+            if stats['output_mean'].shape == (4,):
+                print(f'   ⚠️ 旧格式全局归一化检测到，删除缓存重新计算...')
+                os.remove(stats_path)
+                return self._compute_or_load_statistics()
             print(f'      input_mean:  {stats["input_mean"]}')
             print(f'      input_std:   {stats["input_std"]}')
-            print(f'      output_mean: {stats["output_mean"]}')
-            print(f'      output_std:  {stats["output_std"]}')
+            print(f'      output_mean shape: {stats["output_mean"].shape}')
+            print(f'      output_std shape:  {stats["output_std"].shape}')
+            print(f'      output_mean L0: {stats["output_mean"][0]}')
+            print(f'      output_mean L26: {stats["output_mean"][26]}')
             return stats
         
         print(f'   📊 计算归一化统计信息 (采样500个案例)...')
@@ -116,8 +123,8 @@ class FuXiCFDDataset(Dataset):
         
         input_sum = np.zeros(6, dtype=np.float64)
         input_sq_sum = np.zeros(6, dtype=np.float64)
-        output_sum = np.zeros(4, dtype=np.float64)
-        output_sq_sum = np.zeros(4, dtype=np.float64)
+        output_sum = np.zeros((27, 4), dtype=np.float64)
+        output_sq_sum = np.zeros((27, 4), dtype=np.float64)
         input_count = 0
         output_count = 0
 
@@ -167,12 +174,14 @@ class FuXiCFDDataset(Dataset):
                 for ch in range(6):
                     input_sum[ch] += input_data[ch].sum()
                     input_sq_sum[ch] += (input_data[ch] ** 2).sum()
-                for ch in range(4):
-                    output_sum[ch] += output_data[ch].sum()
-                    output_sq_sum[ch] += (output_data[ch] ** 2).sum()
+                for lvl in range(27):
+                    for ch in range(4):
+                        output_sum[lvl, ch] += output_data[ch, lvl].sum()
+                        output_sq_sum[lvl, ch] += (output_data[ch, lvl] ** 2).sum()
                 
                 input_count += n_in
-                output_count += n_out
+                # output_count: per-level per-channel pixel count (same for all levels)
+                output_count += u_out.shape[1] * u_out.shape[2]  # 300*300 per level
                 
                 del inputs, outputs
             except Exception as e:
@@ -181,23 +190,25 @@ class FuXiCFDDataset(Dataset):
         
         input_mean = (input_sum / input_count).astype(np.float32)
         input_std = (np.sqrt(input_sq_sum / input_count - (input_sum / input_count) ** 2)).astype(np.float32)
-        output_mean = (output_sum / output_count).astype(np.float32)
-        output_std = (np.sqrt(output_sq_sum / output_count - (output_sum / output_count) ** 2)).astype(np.float32)
-        
+        output_mean = (output_sum / output_count).astype(np.float32)  # shape (27, 4)
+        output_std = (np.sqrt(output_sq_sum / output_count - (output_sum / output_count) ** 2)).astype(np.float32)  # shape (27, 4)
+
         input_std = np.maximum(input_std, 1e-6)
         output_std = np.maximum(output_std, 1e-6)
-        
+
         stats = {
             'input_mean': input_mean,
             'input_std': input_std,
-            'output_mean': output_mean,
-            'output_std': output_std,
+            'output_mean': output_mean,  # (27, 4) per-level
+            'output_std': output_std,    # (27, 4) per-level
         }
-        
+
         print(f'      input_mean:  {stats["input_mean"]}')
         print(f'      input_std:   {stats["input_std"]}')
-        print(f'      output_mean: {stats["output_mean"]}')
-        print(f'      output_std:  {stats["output_std"]}')
+        print(f'      output_mean shape: {stats["output_mean"].shape}')
+        print(f'      output_std shape:  {stats["output_std"].shape}')
+        print(f'      output_mean L0: {stats["output_mean"][0]}')
+        print(f'      output_mean L26: {stats["output_mean"][26]}')
         
         cache_dir = os.path.join(self.data_dir, '.data_cache')
         os.makedirs(cache_dir, exist_ok=True)
@@ -218,12 +229,15 @@ class FuXiCFDDataset(Dataset):
         return (input_tensor - mean) / std
 
     def normalize_output(self, output_tensor: torch.Tensor) -> torch.Tensor:
-        """归一化输出: (x - mean) / std, output shape: (27, 4, 300, 300)"""
+        """归一化输出: (x - mean) / std, output shape: (B, 27, 4, H, W) or (27, 4, H, W)"""
         if not self.normalize or self.stats is None:
             return output_tensor
         device = output_tensor.device
-        mean = torch.from_numpy(self.stats['output_mean']).view(1, 4, 1, 1).to(device)
-        std = torch.from_numpy(self.stats['output_std']).view(1, 4, 1, 1).to(device)
+        mean = torch.from_numpy(self.stats['output_mean']).view(27, 4, 1, 1).to(device)
+        std = torch.from_numpy(self.stats['output_std']).view(27, 4, 1, 1).to(device)
+        if output_tensor.dim() == 5:
+            mean = mean.unsqueeze(0)
+            std = std.unsqueeze(0)
         return (output_tensor - mean) / std
 
     def denormalize_output(self, output_tensor: torch.Tensor) -> torch.Tensor:
@@ -231,8 +245,11 @@ class FuXiCFDDataset(Dataset):
         if not self.normalize or self.stats is None:
             return output_tensor
         device = output_tensor.device
-        mean = torch.from_numpy(self.stats['output_mean']).view(1, 4, 1, 1).to(device)
-        std = torch.from_numpy(self.stats['output_std']).view(1, 4, 1, 1).to(device)
+        mean = torch.from_numpy(self.stats['output_mean']).view(27, 4, 1, 1).to(device)
+        std = torch.from_numpy(self.stats['output_std']).view(27, 4, 1, 1).to(device)
+        if output_tensor.dim() == 5:
+            mean = mean.unsqueeze(0)
+            std = std.unsqueeze(0)
         return output_tensor * std + mean
     
     def _get_cache_path(self) -> str:

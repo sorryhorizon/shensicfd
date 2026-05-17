@@ -95,6 +95,19 @@ def run_shensi_streaming(version, ckpt_path, dataset, device, batch_size, sample
         ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
         model.load_state_dict(ckpt['model_state_dict'])
         model.eval()
+    elif version == 'v6':
+        from src.models.swin_unet_v6 import SwinUNetV6
+        model = SwinUNetV6(
+            in_channels=6, n_levels=27, base_channels=48,
+            channel_multipliers=[1, 2, 4, 8],
+            bottleneck_depth=4, num_heads=4, window_size=(5, 5),
+            dropout=0.2, drop_path_rate=0.1,
+            use_cross_attention=True,
+            output_mean=output_mean, output_std=output_std,
+        ).to(device)
+        ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
+        model.load_state_dict(ckpt['model_state_dict'])
+        model.eval()
 
     loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=0)
 
@@ -212,6 +225,19 @@ def run_shensi_full_metrics(version, ckpt_path, dataset, device, batch_size):
             in_channels=6, n_levels=27, base_channels=48,
             bottleneck_depth=4, num_heads=4, window_size=(5, 5),
             dropout=0.2, drop_path_rate=0.1,
+            output_mean=output_mean, output_std=output_std,
+        ).to(device)
+        ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
+        model.load_state_dict(ckpt['model_state_dict'])
+        model.eval()
+    elif version == 'v6':
+        from src.models.swin_unet_v6 import SwinUNetV6
+        model = SwinUNetV6(
+            in_channels=6, n_levels=27, base_channels=48,
+            channel_multipliers=[1, 2, 4, 8],
+            bottleneck_depth=4, num_heads=4, window_size=(5, 5),
+            dropout=0.2, drop_path_rate=0.1,
+            use_cross_attention=True,
             output_mean=output_mean, output_std=output_std,
         ).to(device)
         ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
@@ -360,13 +386,13 @@ def run_fuxi_streaming(dataset, sample_indices, output_dir):
 
 # ---- Plotting ----
 
-def plot_spatial_4way(target, pred_v4, pred_v5, pred_fuxi, sample_label, output_dir):
+def plot_spatial_4way(target, pred_v4, pred_v5, pred_v6, pred_fuxi, sample_label, output_dir):
     selected_levels = [0, 13, 20, 26]
     level_labels = [f'L{i} ({LEVEL_HEIGHTS[i]}m)' for i in selected_levels]
-    models = [('GT', target), ('V4', pred_v4), ('V5', pred_v5), ('FuXi', pred_fuxi)]
+    models = [('GT', target), ('V4', pred_v4), ('V5', pred_v5), ('V6', pred_v6), ('FuXi', pred_fuxi)]
 
     for c, var in enumerate(VAR_NAMES):
-        fig, axes = plt.subplots(len(selected_levels), 4, figsize=(20, 5 * len(selected_levels)))
+        fig, axes = plt.subplots(len(selected_levels), 5, figsize=(25, 5 * len(selected_levels)))
         for row, lvl in enumerate(selected_levels):
             vmin = min(m[1][lvl, c].min() for m in models)
             vmax = max(m[1][lvl, c].max() for m in models)
@@ -391,13 +417,13 @@ def plot_spatial_4way(target, pred_v4, pred_v5, pred_fuxi, sample_label, output_
         print(f'  Saved: {path}')
 
 
-def plot_error_4way(target, pred_v4, pred_v5, pred_fuxi, sample_label, output_dir):
+def plot_error_4way(target, pred_v4, pred_v5, pred_v6, pred_fuxi, sample_label, output_dir):
     selected_levels = [0, 13, 20, 26]
     level_labels = [f'L{i} ({LEVEL_HEIGHTS[i]}m)' for i in selected_levels]
-    models = [('V4', pred_v4), ('V5', pred_v5), ('FuXi', pred_fuxi)]
+    models = [('V4', pred_v4), ('V5', pred_v5), ('V6', pred_v6), ('FuXi', pred_fuxi)]
 
     for c, var in enumerate(VAR_NAMES):
-        fig, axes = plt.subplots(len(selected_levels), 3, figsize=(15, 5 * len(selected_levels)))
+        fig, axes = plt.subplots(len(selected_levels), 4, figsize=(20, 5 * len(selected_levels)))
         for row, lvl in enumerate(selected_levels):
             for col, (name, pred) in enumerate(models):
                 err = pred[lvl, c] - target[lvl, c]
@@ -422,12 +448,13 @@ def plot_error_4way(target, pred_v4, pred_v5, pred_fuxi, sample_label, output_di
         print(f'  Saved: {path}')
 
 
-def plot_r2_vs_height(r2_v4, r2_v5, r2_fuxi, output_dir):
-    """R² vs height for all 3 models."""
+def plot_r2_vs_height(r2_v4, r2_v5, r2_v6, r2_fuxi, output_dir):
+    """R² vs height for all 4 models."""
     fig, axes = plt.subplots(1, 4, figsize=(20, 5))
     for c, var in enumerate(VAR_NAMES):
         axes[c].plot(LEVEL_HEIGHTS, r2_v4[:, c], 'o-', label='V4', markersize=3, linewidth=1.5)
         axes[c].plot(LEVEL_HEIGHTS, r2_v5[:, c], 's-', label='V5', markersize=3, linewidth=1.5)
+        axes[c].plot(LEVEL_HEIGHTS, r2_v6[:, c], 'D-', label='V6', markersize=3, linewidth=1.5)
         axes[c].plot(LEVEL_HEIGHTS, r2_fuxi[:, c], '^-', label='FuXi', markersize=3, linewidth=1.5)
         axes[c].set_xlabel('Height (m)')
         axes[c].set_ylabel('R²')
@@ -436,7 +463,7 @@ def plot_r2_vs_height(r2_v4, r2_v5, r2_fuxi, output_dir):
         axes[c].grid(True, alpha=0.3)
         axes[c].set_ylim(bottom=0)
 
-    fig.suptitle('R² vs Height: V4 vs V5 vs FuXi-CFD (Full Test Set)', fontsize=14, fontweight='bold')
+    fig.suptitle('R² vs Height: V4 vs V5 vs V6 vs FuXi-CFD (Full Test Set)', fontsize=14, fontweight='bold')
     plt.tight_layout()
     path = os.path.join(output_dir, 'r2_vs_height.png')
     plt.savefig(path, dpi=150, bbox_inches='tight')
@@ -444,20 +471,20 @@ def plot_r2_vs_height(r2_v4, r2_v5, r2_fuxi, output_dir):
     print(f'  Saved: {path}')
 
 
-def plot_metrics_bar(r2_v4, r2_v5, r2_fuxi, output_dir):
-    """Bar chart: mean per-level R² for V4, V5, FuXi."""
+def plot_metrics_bar(r2_v4, r2_v5, r2_v6, r2_fuxi, output_dir):
+    """Bar chart: mean per-level R² for V4, V5, V6, FuXi."""
     fig, ax = plt.subplots(1, 1, figsize=(10, 5))
     x = np.arange(4)
-    width = 0.25
+    width = 0.2
 
-    for i, (name, r2_data) in enumerate([('V4', r2_v4), ('V5', r2_v5), ('FuXi', r2_fuxi)]):
+    for i, (name, r2_data) in enumerate([('V4', r2_v4), ('V5', r2_v5), ('V6', r2_v6), ('FuXi', r2_fuxi)]):
         mean_r2 = [np.mean(r2_data[:, c]) for c in range(4)]
-        ax.bar(x + (i - 1) * width, mean_r2, width, label=name)
+        ax.bar(x + (i - 1.5) * width, mean_r2, width, label=name)
 
     ax.set_xticks(x)
     ax.set_xticklabels(VAR_NAMES)
     ax.set_ylabel('Mean Per-Level R²')
-    ax.set_title('V4 vs V5 vs FuXi-CFD (Full Test Set)')
+    ax.set_title('V4 vs V5 vs V6 vs FuXi-CFD (Full Test Set)')
     ax.legend()
     ax.grid(True, alpha=0.3, axis='y')
     ax.set_ylim(bottom=0)
@@ -475,10 +502,11 @@ def plot_training_curves(output_dir):
 
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
 
-    for version in ['v4', 'v5']:
+    for version in ['v4', 'v5', 'v6']:
         tb_dirs = {
             'v4': 'logs/shensiv4_main/tensorboard/tensorboard',
             'v5': 'logs/shensiv5_main/tensorboard',
+            'v6': 'logs/shensiv6_main/tensorboard',
         }
         tb_dir = tb_dirs.get(version)
         if not tb_dir or not os.path.exists(tb_dir):
@@ -536,7 +564,7 @@ def plot_training_curves(output_dir):
     for ax in axes.flat:
         ax.set_xlabel('Epoch')
 
-    fig.suptitle('Training Curves: V4 vs V5', fontsize=14, fontweight='bold')
+    fig.suptitle('Training Curves: V4 vs V5 vs V6', fontsize=14, fontweight='bold')
     plt.tight_layout()
     path = os.path.join(output_dir, 'training_curves.png')
     plt.savefig(path, dpi=150, bbox_inches='tight')
@@ -583,6 +611,10 @@ def main():
         r2_v5 = run_shensi_full_metrics('v5', 'checkpoints/shensiv5_main/best_model_v5.pt',
                                          dataset, device, args.batch_size)
 
+        print('  V6...')
+        r2_v6 = run_shensi_full_metrics('v6', 'checkpoints/shensiv6_main/best_model_v6.pt',
+                                         dataset, device, args.batch_size)
+
         print('  FuXi...')
         r2_fuxi, fuxi_sample_preds, fuxi_sample_targets = run_fuxi_streaming(dataset, samples, args.output_dir)
 
@@ -590,6 +622,7 @@ def main():
         metrics = {
             'v4': r2_v4.tolist(),
             'v5': r2_v5.tolist(),
+            'v6': r2_v6.tolist(),
             'fuxi': r2_fuxi.tolist(),
         }
         with open(metrics_path, 'w') as f:
@@ -626,8 +659,23 @@ def main():
         model_v5.load_state_dict(ckpt_v5['model_state_dict'])
         model_v5.eval()
 
+        # V6 on samples
+        from src.models.swin_unet_v6 import SwinUNetV6
+        model_v6 = SwinUNetV6(
+            in_channels=6, n_levels=27, base_channels=48,
+            channel_multipliers=[1, 2, 4, 8],
+            bottleneck_depth=4, num_heads=4, window_size=(5, 5),
+            dropout=0.2, drop_path_rate=0.1,
+            use_cross_attention=True,
+            output_mean=output_mean, output_std=output_std,
+        ).to(device)
+        ckpt_v6 = torch.load('checkpoints/shensiv6_main/best_model_v6.pt', map_location=device, weights_only=False)
+        model_v6.load_state_dict(ckpt_v6['model_state_dict'])
+        model_v6.eval()
+
         v4_sample_preds = {}
         v5_sample_preds = {}
+        v6_sample_preds = {}
         sample_targets = {}
 
         with torch.no_grad():
@@ -638,21 +686,25 @@ def main():
 
                 out_v4 = model_v4.forward_inference(inputs, use_diffusion=False)
                 out_v5 = model_v5(inputs)
+                out_v6 = model_v6(inputs)
 
                 if hasattr(dataset, 'denormalize_output'):
                     out_v4 = dataset.denormalize_output(out_v4)
                     out_v5 = dataset.denormalize_output(out_v5)
+                    out_v6 = dataset.denormalize_output(out_v6)
                     target = dataset.denormalize_output(target)
 
                 v4_sample_preds[label] = out_v4[0].cpu().numpy()
                 v5_sample_preds[label] = out_v5[0].cpu().numpy()
+                v6_sample_preds[label] = out_v6[0].cpu().numpy()
                 sample_targets[label] = target[0].cpu().numpy()
 
                 np.save(os.path.join(args.output_dir, f'sample_{label}_pred_v4.npy'), v4_sample_preds[label])
                 np.save(os.path.join(args.output_dir, f'sample_{label}_pred_v5.npy'), v5_sample_preds[label])
+                np.save(os.path.join(args.output_dir, f'sample_{label}_pred_v6.npy'), v6_sample_preds[label])
                 np.save(os.path.join(args.output_dir, f'sample_{label}_target.npy'), sample_targets[label])
 
-        del model_v4, model_v5
+        del model_v4, model_v5, model_v6
         torch.cuda.empty_cache()
 
     else:
@@ -662,10 +714,12 @@ def main():
             metrics = json.load(f)
         r2_v4 = np.array(metrics['v4'])
         r2_v5 = np.array(metrics['v5'])
+        r2_v6 = np.array(metrics.get('v6', metrics['v5']))  # fallback if no v6 cached
         r2_fuxi = np.array(metrics['fuxi'])
 
         v4_sample_preds = {}
         v5_sample_preds = {}
+        v6_sample_preds = {}
         sample_targets = {}
         fuxi_sample_preds = {}
         fuxi_sample_targets = {}
@@ -673,13 +727,14 @@ def main():
         for idx, label in samples:
             v4_sample_preds[label] = np.load(os.path.join(args.output_dir, f'sample_{label}_pred_v4.npy'))
             v5_sample_preds[label] = np.load(os.path.join(args.output_dir, f'sample_{label}_pred_v5.npy'))
+            v6_sample_preds[label] = np.load(os.path.join(args.output_dir, f'sample_{label}_pred_v6.npy'))
             sample_targets[label] = np.load(os.path.join(args.output_dir, f'sample_{label}_target.npy'))
             fuxi_sample_preds[label] = np.load(os.path.join(args.output_dir, f'sample_{label}_pred_fuxi.npy'))
             fuxi_sample_targets[label] = np.load(os.path.join(args.output_dir, f'sample_{label}_target_fuxi.npy'))
 
     # Print metrics
     print(f'\n=== Per-Level R² (Full Test Set) ===')
-    for name, r2_data in [('V4', r2_v4), ('V5', r2_v5), ('FuXi', r2_fuxi)]:
+    for name, r2_data in [('V4', r2_v4), ('V5', r2_v5), ('V6', r2_v6), ('FuXi', r2_fuxi)]:
         print(f'\n{name}:')
         for c, var in enumerate(VAR_NAMES):
             mean_r2 = np.mean(r2_data[:, c])
@@ -691,12 +746,13 @@ def main():
         t = sample_targets[label]
         v4 = v4_sample_preds[label]
         v5 = v5_sample_preds[label]
+        v6 = v6_sample_preds[label]
         fuxi = fuxi_sample_preds[label]
-        plot_spatial_4way(t, v4, v5, fuxi, label, args.output_dir)
-        plot_error_4way(t, v4, v5, fuxi, label, args.output_dir)
+        plot_spatial_4way(t, v4, v5, v6, fuxi, label, args.output_dir)
+        plot_error_4way(t, v4, v5, v6, fuxi, label, args.output_dir)
 
-    plot_r2_vs_height(r2_v4, r2_v5, r2_fuxi, args.output_dir)
-    plot_metrics_bar(r2_v4, r2_v5, r2_fuxi, args.output_dir)
+    plot_r2_vs_height(r2_v4, r2_v5, r2_v6, r2_fuxi, args.output_dir)
+    plot_metrics_bar(r2_v4, r2_v5, r2_v6, r2_fuxi, args.output_dir)
 
     print(f'\nAll figures saved to: {args.output_dir}')
 
